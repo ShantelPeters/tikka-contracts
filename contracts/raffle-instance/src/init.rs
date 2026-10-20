@@ -122,6 +122,10 @@ pub(crate) fn init(
     let swap_deadline = config
         .swap_deadline_seconds
         .unwrap_or(DEFAULT_SWAP_DEADLINE_SECONDS);
+    let prize_token = config
+        .prize_token
+        .clone()
+        .unwrap_or_else(|| config.payment_token.clone());
 
     let raffle = Raffle {
         creator: creator.clone(),

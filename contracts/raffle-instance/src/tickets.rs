@@ -39,7 +39,7 @@ use soroban_sdk::{
     token, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
-use raffle_shared::{apply_bp, RandomnessSource, Ticket};
+use raffle_shared::{RandomnessSource, Ticket};
 
 use crate::events::{DrawTriggered, RandomnessRequested, TicketPurchased};
 use crate::helpers::{

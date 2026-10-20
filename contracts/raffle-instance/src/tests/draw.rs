@@ -86,7 +86,7 @@ fn test_oracle_fallback_with_ledger_delays() {
 
     // 6. Attempt fallback too early
     let result = client.try_trigger_randomness_fallback(&creator, &false);
-    assert_eq!(env.events().all().len(), 0);
+    assert_eq!(env.events().all().events().len(), 0);
     assert_eq!(result.err(), Some(Ok(Error::FallbackTooEarly)));
 
     // 7. Simulate ledger delays

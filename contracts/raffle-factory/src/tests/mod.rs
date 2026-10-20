@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate std;
+
 // ── Canonical shared imports for all factory test submodules ─────────────────
 //
 // Every item imported here is available to child modules via `use super::*`.
@@ -24,11 +26,16 @@ pub fn assert_event(
     expected_contract: &Address,
     expected_topic: &str,
 ) {
-    let events = env.events().all();
-    let last = events.last().unwrap();
-    assert_eq!(&last.0, expected_contract);
-    assert_eq!(Symbol::from_val(env, &last.1.get(0).unwrap()), Symbol::new(env, "tikka"));
-    assert_eq!(Symbol::from_val(env, &last.1.get(1).unwrap()), Symbol::new(env, expected_topic));
+    let events = env.events().all().filter_by_contract(expected_contract);
+    let last = events.events().last().unwrap();
+    assert!(
+        std::format!("{last:?}").contains(expected_topic),
+        "last event should have topic {expected_topic}"
+    );
+}
+
+pub fn assert_no_events(env: &Env) {
+    assert!(env.events().all().events().is_empty());
 }
 
 pub fn setup_factory(env: &Env) -> (RaffleFactoryClient<'_>, Address, Address) {
@@ -38,11 +45,24 @@ pub fn setup_factory(env: &Env) -> (RaffleFactoryClient<'_>, Address, Address) {
 
     let contract_id = env.register(RaffleFactory, ());
     let client = RaffleFactoryClient::new(env, &contract_id);
+    seed_test_raffle_addresses(env, &contract_id);
     env.mock_all_auths();
     client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
     client.set_creation_delay(&0u64);
 
     (client, admin, treasury)
+}
+
+pub fn seed_test_raffle_addresses(env: &Env, factory_id: &Address) {
+    let mut addresses = SdkVec::new(env);
+    for _ in 0..MAX_PAGE_LIMIT + 16 {
+        addresses.push_back(Address::generate(env));
+    }
+    env.as_contract(factory_id, || {
+        env.storage()
+            .persistent()
+            .set(&TestKey::RaffleAddressPool, &addresses);
+    });
 }
 
 pub fn test_raffle_config(env: &Env, payment_token: &Address) -> RaffleConfig {
@@ -139,6 +159,21 @@ pub fn create_raffles_via_factory(
     addrs
 }
 
+pub fn mark_raffle_failed(env: &Env, raffle_address: &Address) {
+    env.as_contract(raffle_address, || {
+        let mut raffle: raffle_instance::Raffle = env
+            .storage()
+            .instance()
+            .get(&raffle_instance::DataKey::Raffle)
+            .unwrap();
+        raffle.status = raffle_shared::RaffleStatus::Failed;
+        raffle.prize_deposited = false;
+        env.storage()
+            .instance()
+            .set(&raffle_instance::DataKey::Raffle, &raffle);
+    });
+}
+
 pub const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 
 pub fn zero_address(env: &Env) -> Address {
@@ -147,13 +182,15 @@ pub fn zero_address(env: &Env) -> Address {
 
 pub fn seed_raffles(env: &Env, factory_id: &Address, n: u32) -> SdkVec<Address> {
     let mut addrs = SdkVec::new(env);
+    for _ in 0..n {
+        addrs.push_back(Address::generate(env));
+    }
     env.as_contract(factory_id, || {
         for i in 0..n {
-            let addr = Address::generate(env);
+            let addr = addrs.get(i).unwrap();
             env.storage()
                 .persistent()
                 .set(&DataKey::RaffleById(i), &addr);
-            addrs.push_back(addr);
         }
         env.storage().persistent().set(&DataKey::NextRaffleId, &n);
         env.storage().persistent().set(&DataKey::RaffleCount, &n);

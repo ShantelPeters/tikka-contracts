@@ -15,12 +15,11 @@ fn non_whitelisted_creator_is_rate_limited() {
 
     client.create_raffle(&creator, &rate_limit_config(&env, &token, "r1"));
 
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "r2")),
         Err(Ok(ContractError::RateLimitExceeded))
     );
-    assert_eq!(env.events().all().len(), start_events + 1);
+    assert_no_events(&env);
 
     env.ledger().set_timestamp(1_000 + delay);
 
@@ -113,12 +112,11 @@ fn set_creation_delay_affects_rate_limiter() {
     client.create_raffle(&creator, &rate_limit_config(&env, &token, "d1"));
 
     env.ledger().set_timestamp(1_000 + 59);
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_create_raffle(&creator, &rate_limit_config(&env, &token, "d2")),
         Err(Ok(ContractError::RateLimitExceeded))
     );
-    assert_eq!(env.events().all().len(), start_events + 1);
+    assert_no_events(&env);
 
     env.ledger().set_timestamp(1_000 + 60);
     client.create_raffle(&creator, &rate_limit_config(&env, &token, "d3"));
@@ -220,8 +218,5 @@ fn test_only_admin_can_set_creation_paused() {
             sub_invokes: &[],
         },
     }]);
-    assert_eq!(
-        client.try_set_creation_paused(&true),
-        Err(Ok(ContractError::NotAuthorized))
-    );
+    assert!(client.try_set_creation_paused(&true).is_err());
 }

@@ -420,6 +420,7 @@ pub(crate) fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Resul
     }
     let tc = token::Client::new(&env, &raffle.payment_token);
     tc.try_transfer(&env.current_contract_address(), &recipient, &amount)
+        .map_err(|_| Error::TokenTransferFailed)?
         .map_err(|_| Error::TokenTransferFailed)?;
     let remaining = acc.checked_sub(amount).ok_or(Error::ArithmeticOverflow)?;
     env.storage()

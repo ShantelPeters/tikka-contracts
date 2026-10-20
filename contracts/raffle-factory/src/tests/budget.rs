@@ -55,6 +55,7 @@ fn setup_factory(env: &Env) -> (RaffleFactoryClient<'_>, Address, Address) {
     let wasm_hash = BytesN::from_array(env, &[0u8; 32]);
     let contract_id = env.register(RaffleFactory, ());
     let client = RaffleFactoryClient::new(env, &contract_id);
+    seed_test_raffle_addresses(env, &contract_id);
     env.mock_all_auths();
     client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
     client.set_creation_delay(&0u64);

@@ -82,8 +82,7 @@ use raffle_shared::constants::{
 use raffle_shared::{RaffleConfigBuilder, RecurringRaffleConfig};
 
 use crate::events;
-use crate::registry::PartnerStats;
-use crate::{ContractError, DataKey, RaffleFactory};
+use crate::{ContractError, RaffleFactory, RaffleFactoryArgs, RaffleFactoryClient};
 
 /// On-chain state for a recurring raffle schedule.
 #[derive(Clone)]
@@ -254,30 +253,7 @@ impl RaffleFactory {
         .publish(&env);
 
         // --- partner dashboard stats (#488) ---
-        let creator = entry.creator.clone();
-        let is_whitelisted = env.storage().persistent().has(&DataKey::WhitelistedPartner(creator.clone()));
-        if is_whitelisted {
-            let now = env.ledger().timestamp();
-            let mut stats: PartnerStats = env
-                .storage()
-                .persistent()
-                .get(&DataKey::PartnerStats(creator.clone()))
-                .unwrap_or(PartnerStats {
-                    total_raffles: 0,
-                    total_volume: 0,
-                    total_fees_generated: 0,
-                    first_raffle_at: now,
-                    latest_raffle_at: 0,
-                });
-            if stats.total_raffles == 0 {
-                stats.first_raffle_at = now;
-            }
-            stats.total_raffles = stats.total_raffles.saturating_add(1);
-            stats.latest_raffle_at = now;
-            env.storage()
-                .persistent()
-                .set(&DataKey::PartnerStats(creator), &stats);
-        }
+        crate::record_partner_raffle(&env, &entry.creator);
 
         Ok(raffle_address)
     }

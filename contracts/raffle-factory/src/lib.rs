@@ -50,6 +50,13 @@ pub struct PendingOp {
     pub proposed_by: Address,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+#[contracttype]
+pub enum TestKey {
+    RaffleAddressPool,
+}
+
 
 
 /// A periodic state snapshot recording factory health at a milestone raffle
@@ -143,8 +150,6 @@ pub enum DataKey {
     /// Cumulative ticket-sale volume denominated in a specific asset. Updated
     /// by [`RaffleFactory::record_volume`] on every ticket purchase.
     TotalVolumePerAsset(Address),
-    /// Kept for test-only address generation; not used for indexing.
-    RaffleInstancesCount,
     /// Per-creator raffle index: creator Address → Vec<Address> of raffle addresses.
     /// Appended to on every successful `create_raffle`.
     CreatorRaffles(Address),
@@ -398,19 +403,17 @@ pub(crate) fn create_raffle_internal(
 
     #[cfg(test)]
     let raffle_address = {
-        let mut count: u32 = env
+        let mut addresses: Vec<Address> = env
             .storage()
             .persistent()
-            .get(&DataKey::RaffleInstancesCount)
-            .unwrap_or(0);
-        count += 1;
+            .get(&TestKey::RaffleAddressPool)
+            .ok_or(ContractError::InvalidParameters)?;
+        let id = addresses
+            .pop_back()
+            .ok_or(ContractError::InvalidParameters)?;
         env.storage()
             .persistent()
-            .set(&DataKey::RaffleInstancesCount, &count);
-        let mut id = Address::generate(env);
-        for _ in 0..count {
-            id = Address::generate(env);
-        }
+            .set(&TestKey::RaffleAddressPool, &addresses);
         env.register_at(&id, raffle_instance::RaffleInstance, ());
         id
     };
@@ -430,6 +433,14 @@ pub(crate) fn create_raffle_internal(
     env.storage()
         .persistent()
         .set(&DataKey::RaffleById(stable_id), &raffle_address);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RaffleCreator(stable_id), &creator);
+    if let Some(ref category) = category {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RaffleCategory(stable_id), category);
+    }
     // Reverse index so the factory can authorise bookkeeping calls from
     // instances it deployed (#795).
     env.storage()
@@ -484,6 +495,38 @@ pub(crate) fn create_raffle_internal(
     maybe_create_checkpoint(env, count);
 
     Ok(raffle_address)
+}
+
+pub(crate) fn record_partner_raffle(env: &Env, creator: &Address) {
+    if !env
+        .storage()
+        .persistent()
+        .get(&DataKey::WhitelistedPartner(creator.clone()))
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let now = env.ledger().timestamp();
+    let mut stats: PartnerStats = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PartnerStats(creator.clone()))
+        .unwrap_or(PartnerStats {
+            total_raffles: 0,
+            total_volume: 0,
+            total_fees_generated: 0,
+            first_raffle_at: now,
+            latest_raffle_at: 0,
+        });
+    if stats.total_raffles == 0 {
+        stats.first_raffle_at = now;
+    }
+    stats.total_raffles = stats.total_raffles.saturating_add(1);
+    stats.latest_raffle_at = now;
+    env.storage()
+        .persistent()
+        .set(&DataKey::PartnerStats(creator.clone()), &stats);
 }
 
 #[contractimpl]
@@ -975,7 +1018,9 @@ impl RaffleFactory {
             return Err(ContractError::RandomnessSourceTooWeakForPrize);
         }
 
-        create_raffle_internal(&env, creator, final_config)
+        let raffle_address = create_raffle_internal(&env, creator.clone(), final_config)?;
+        record_partner_raffle(&env, &creator);
+        Ok(raffle_address)
     }
 
     /// Accumulate `amount` into the running volume counter for `asset`.

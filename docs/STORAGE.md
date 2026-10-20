@@ -32,6 +32,8 @@ Source of truth: `DataKey` enum.
 | `PendingOp(u32)` | Persistent | Per proposed op; removed on execute/cancel | Yes while pending | After execute/cancel OK | Timelock payload (`TIMELOCK_DELAY_SECONDS` = 172800) |
 | `OpCounter` | Persistent | Incremented per propose | Yes | No | Allocates op IDs |
 | `RaffleById(u32)` | Persistent | On `create_raffle`; removed on tombstone | Yes | No for live IDs | O(1) stable ID → address map |
+| `RaffleCreator(u32)` | Persistent | On `create_raffle`; removed on tombstone | Yes | No for live IDs | Stable ID → creator; required to prune the creator index |
+| `RaffleCategory(u32)` | Persistent | On categorized `create_raffle`; removed on tombstone | Yes | No for live IDs | Stable ID → category; required to prune the category index |
 | `NextRaffleId` | Persistent | Incremented on create | Yes | No | Next stable ID (never decremented) |
 | `RaffleCount` | Persistent | Updated on create/tombstone | Operational | Prefer keep | Live (non-tombstoned) count |
 | `TotalRafflesCreated` | Persistent | Incremented on create | Audit | Prefer keep | Cumulative creations |
@@ -46,7 +48,6 @@ Source of truth: `DataKey` enum.
 | `TotalVolumePerAsset(Address)` | Persistent | Updated on volume record | Analytics | Soft | Cumulative volume |
 | `Checkpoint(u32)` | Persistent | Every `CHECKPOINT_INTERVAL` (1000) raffles | Audit | Soft historically | Periodic snapshot |
 | `LatestCheckpointIndex` | Persistent | With checkpoint write | Audit | Prefer keep | Points at latest checkpoint |
-| `RaffleInstancesCount` | Persistent | Test path only | Test | N/A | Address generation under `cfg(test)` |
 
 ### Factory write patterns
 

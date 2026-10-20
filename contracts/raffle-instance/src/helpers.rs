@@ -593,6 +593,7 @@ pub(crate) fn do_finalize_with_seed(
         winner_records.push_back(crate::Winner {
             address: winner,
             claimed: false,
+            swept: false,
         });
     }
     raffle.winners = winner_records;

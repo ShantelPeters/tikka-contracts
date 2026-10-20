@@ -8,13 +8,16 @@ use super::*;
 use crate::{RaffleFactory, RaffleFactoryClient, RaffleConfig};
 
 fn setup_with_raffles(env: &Env, count: u32) -> RaffleFactoryClient<'_> {
+    env.mock_all_auths();
     let admin = Address::generate(env);
     let treasury = Address::generate(env);
     let wasm_hash = BytesN::from_array(env, &[0u8; 32]);
     let contract_id = env.register(RaffleFactory, ());
     let client = RaffleFactoryClient::new(env, &contract_id);
+    seed_test_raffle_addresses(env, &contract_id);
 
     client.init_factory(&admin, &wasm_hash, &0u32, &treasury);
+    client.set_creation_delay(&0u64);
 
     let creator = Address::generate(env);
     let token = env.register_stellar_asset_contract_v2(admin.clone()).address();

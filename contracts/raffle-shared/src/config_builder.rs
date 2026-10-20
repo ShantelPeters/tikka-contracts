@@ -13,11 +13,20 @@ use crate::{RandomnessSource, RaffleConfig};
 /// # Example
 ///
 /// ```rust
+/// use raffle_shared::RaffleConfigBuilder;
+/// use soroban_sdk::{testutils::Address as _, Address, Env, vec};
+///
+/// let env = Env::default();
+/// let payment_token = env
+///     .register_stellar_asset_contract_v2(Address::generate(&env))
+///     .address();
 /// let config = RaffleConfigBuilder::new(&env, payment_token)
 ///     .max_tickets(100)
 ///     .ticket_price(10_000)
 ///     .prizes(vec![&env, 10_000])
-///     .build()?;
+///     .build()
+///     .expect("valid raffle config");
+/// let _ = config;
 /// ```
 #[allow(dead_code)]
 pub struct RaffleConfigBuilder<'a> {

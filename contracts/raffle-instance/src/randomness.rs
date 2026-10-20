@@ -525,7 +525,7 @@ pub fn aggregate_quorum_seeds(env: &Env, request_id: u64, seeds: &Vec<(Address, 
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Env;
+    use soroban_sdk::{Env, String};
 
     /// Deliberately biased winner selector used to verify that the Chi-squared test
     /// correctly detects modulo / index distribution bias (#633).

@@ -202,6 +202,7 @@ fn clean_old_raffle_prunes_pagination() {
     let addrs = create_raffles_via_factory(&env, &client, &admin, &_treasury, &creator, 10);
 
     for id in [1u32, 3, 5] {
+        mark_raffle_failed(&env, &addrs.get(id).unwrap());
         assert!(client.try_clean_old_raffle(&id).is_ok());
     }
 
@@ -242,6 +243,7 @@ fn clean_old_raffle_prunes_creator_index() {
 
     assert_eq!(client.get_raffles_by_creator(&creator, &PaginationParams { limit: 10, offset: 0 }).total, 3u32);
 
+    mark_raffle_failed(&env, &addrs.get(2).unwrap());
     client.clean_old_raffle(&2u32);
 
     assert_eq!(client.get_raffles_by_creator(&creator, &PaginationParams { limit: 10, offset: 0 }).total, 2u32);
@@ -261,10 +263,11 @@ fn clean_old_raffle_prunes_category_index() {
     let mut config = test_raffle_config(&env, &payment_token);
     config.category = Some(String::from_str(&env, "gaming"));
     let addr1 = client.create_raffle(&creator, &config);
-    let _addr2 = client.create_raffle(&creator, &config);
+    let addr2 = client.create_raffle(&creator, &config);
 
     assert_eq!(client.get_raffles_by_category(&String::from_str(&env, "gaming"), &PaginationParams { limit: 10, offset: 0 }).total, 2u32);
 
+    mark_raffle_failed(&env, &addr2);
     client.clean_old_raffle(&1u32);
 
     assert_eq!(client.get_raffles_by_category(&String::from_str(&env, "gaming"), &PaginationParams { limit: 10, offset: 0 }).total, 1u32);
@@ -282,7 +285,7 @@ fn clean_old_raffle_revokes_leaderboard_access() {
     // A live registered raffle can write its leaderboard record.
     client.record_leaderboard_entry(&raffle_address, &1, &1, &1);
     assert_eq!(
-        client.get_leaderboard(&raffle_shared::LeaderboardMetric::TicketsSold).len(),
+        client.get_leaderboard(&crate::LeaderboardMetric::TicketsSold).len(),
         1
     );
 
@@ -303,7 +306,7 @@ fn clean_old_raffle_revokes_leaderboard_access() {
         Err(Ok(ContractError::CallerNotRegisteredRaffle))
     );
     assert_eq!(
-        client.get_leaderboard(&raffle_shared::LeaderboardMetric::TicketsSold).len(),
+        client.get_leaderboard(&crate::LeaderboardMetric::TicketsSold).len(),
         1
     );
 }
@@ -314,12 +317,11 @@ fn test_clean_old_raffle_invalid_id_rejected() {
     env.mock_all_auths();
     let (client, _admin, _treasury) = setup_factory(&env);
 
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_clean_old_raffle(&0u32),
         Err(Ok(ContractError::InvalidRaffleId))
     );
-    assert_eq!(env.events().all().len(), start_events);
+    assert_no_events(&env);
 }
 
 #[test]
@@ -335,10 +337,9 @@ fn test_clean_old_raffle_already_tombstoned_rejected() {
             .remove(&DataKey::RaffleById(1u32));
     });
 
-    let start_events = env.events().all().len();
     assert_eq!(
         client.try_clean_old_raffle(&1u32),
         Err(Ok(ContractError::InvalidRaffleId))
     );
-    assert_eq!(env.events().all().len(), start_events);
+    assert_no_events(&env);
 }
