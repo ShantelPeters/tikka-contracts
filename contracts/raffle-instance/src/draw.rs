@@ -18,11 +18,6 @@ use crate::{
     CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
     RANDOMNESS_MIN_DELAY_LEDGERS,
 };
-use crate::randomness::{build_vrf_proof_message, derive_random_seed_from_proof};
-use crate::{
-    CommitRevealEntry, DataKey, Error, RaffleStatus, ORACLE_TIMEOUT_LEDGERS,
-    RANDOMNESS_MIN_DELAY_LEDGERS,
-};
 
 pub(crate) fn finalize_raffle(env: Env) -> Result<(), Error> {
     let drawing_lock: bool = env
@@ -566,9 +561,10 @@ pub(crate) fn provide_quorum_randomness(
     Ok(())
 }
 
-        let aggregate = randomness::aggregate_quorum_seeds(&env, request_id, &seeds);
-        crate::helpers::do_finalize_with_seed(&env, raffle, aggregate, RandomnessType::Quorum, Some(seeds))?;
-    }
+
+/// Reveal a previously submitted commit-reveal preimage for `ticket_id`.
+pub(crate) fn reveal_commit(env: Env, ticket_id: u32, preimage: BytesN<32>) -> Result<(), Error> {
+    let raffle = read_raffle(&env)?;
     if raffle.status != RaffleStatus::Active && raffle.status != RaffleStatus::Drawing {
         return Err(Error::InvalidStatus);
     }

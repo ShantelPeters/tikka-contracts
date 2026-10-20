@@ -271,6 +271,44 @@ fn clean_old_raffle_prunes_category_index() {
 }
 
 #[test]
+fn clean_old_raffle_revokes_leaderboard_access() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup_factory(&env);
+    let creator = Address::generate(&env);
+    let raffles = create_raffles_via_factory(&env, &client, &_admin, &_treasury, &creator, 1);
+    let raffle_address = raffles.get(0).unwrap();
+
+    // A live registered raffle can write its leaderboard record.
+    client.record_leaderboard_entry(&raffle_address, &1, &1, &1);
+    assert_eq!(
+        client.get_leaderboard(&raffle_shared::LeaderboardMetric::TicketsSold).len(),
+        1
+    );
+
+    // Make the test raffle eligible for the factory's terminal cleanup path.
+    env.as_contract(&raffle_address, || {
+        let mut raffle: raffle_instance::Raffle =
+            env.storage().instance().get(&raffle_instance::DataKey::Raffle).unwrap();
+        raffle.status = raffle_shared::RaffleStatus::Failed;
+        raffle.prize_deposited = false;
+        env.storage()
+            .instance()
+            .set(&raffle_instance::DataKey::Raffle, &raffle);
+    });
+
+    client.clean_old_raffle(&0);
+    assert_eq!(
+        client.try_record_leaderboard_entry(&raffle_address, &2, &2, &2),
+        Err(Ok(ContractError::CallerNotRegisteredRaffle))
+    );
+    assert_eq!(
+        client.get_leaderboard(&raffle_shared::LeaderboardMetric::TicketsSold).len(),
+        1
+    );
+}
+
+#[test]
 fn test_clean_old_raffle_invalid_id_rejected() {
     let env = Env::default();
     env.mock_all_auths();

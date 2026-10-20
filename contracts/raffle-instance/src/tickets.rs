@@ -43,7 +43,7 @@ use raffle_shared::{apply_bp, RandomnessSource, Ticket};
 
 use crate::events::{DrawTriggered, RandomnessRequested, TicketPurchased};
 use crate::helpers::{
-    bump_raffle_ttl, calculate_buy_quote, Guard, request_randomness, require_not_paused,
+    bump_raffle_ttl, bump_touched_tickets, calculate_buy_quote, Guard, request_randomness, require_not_paused,
     transition_to_drawing,
 };
 use crate::{CommitRevealEntry, DataKey, Error, Raffle, RaffleStatus};
@@ -285,6 +285,9 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         .checked_add(quantity)
         .ok_or(Error::ArithmeticOverflow)?;
 
+    // Keep this purchase's tickets and the holder's per-address cap alive (#1230).
+    bump_touched_tickets(&env, &buyer, snapshot_sold.saturating_add(1), quantity);
+
     //  7. transition_to_drawing and request_randomness (if needed)
     if raffle.tickets_sold >= raffle.max_tickets {
         transition_to_drawing(&env, &mut raffle, timestamp)?;
@@ -329,23 +332,45 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         .instance()
         .get::<_, Address>(&DataKey::Factory)
     {
-        let args: Vec<Val> = (raffle.payment_token.clone(), total_price).into_val(&env);
+        let raffle_address = env.current_contract_address();
+        let volume_args: Vec<Val> = (
+            raffle_address.clone(),
+            raffle.payment_token.clone(),
+            total_price,
+        )
+            .into_val(&env);
+        let participant_args: Vec<Val> =
+            (raffle_address, buyer.clone()).into_val(&env);
         env.authorize_as_current_contract(Vec::from_array(
             &env,
-            [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: factory_address.clone(),
-                    fn_name: Symbol::new(&env, "record_volume"),
-                    args: args.clone(),
-                },
-                sub_invocations: Vec::new(&env),
-            })],
+            [
+                InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: factory_address.clone(),
+                        fn_name: Symbol::new(&env, "record_volume"),
+                        args: volume_args.clone(),
+                    },
+                    sub_invocations: Vec::new(&env),
+                }),
+                InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: factory_address.clone(),
+                        fn_name: Symbol::new(&env, "track_participant"),
+                        args: participant_args.clone(),
+                    },
+                    sub_invocations: Vec::new(&env),
+                }),
+            ],
         ));
-        env.invoke_contract::<()>(&factory_address, &Symbol::new(&env, "record_volume"), args);
+        env.invoke_contract::<()>(
+            &factory_address,
+            &Symbol::new(&env, "record_volume"),
+            volume_args,
+        );
         env.invoke_contract::<()>(
             &factory_address,
             &Symbol::new(&env, "track_participant"),
-            (buyer,).into_val(&env),
+            participant_args,
         );
     }
 
@@ -457,18 +482,6 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
     }
 
     let timestamp = env.ledger().timestamp();
-        fix/security-checks-effects-763
-    let ticket_total = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let protocol_fee = apply_bp(ticket_total, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let total_price = ticket_total
-        .checked_add(protocol_fee)
-        .ok_or(Error::ArithmeticOverflow)?;
-        master
     let quote = calculate_buy_quote(&raffle, quantity)?;
     let total_price = quote.net_to_pay;
     let protocol_fee = quote.fee;
@@ -560,6 +573,9 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
         .checked_add(quantity)
         .ok_or(Error::ArithmeticOverflow)?;
 
+    // Keep this purchase's tickets and the holder's per-address cap alive (#1230).
+    bump_touched_tickets(&env, &recipient, snapshot_sold.saturating_add(1), quantity);
+
     //  7. transition_to_drawing and request_randomness (if needed)
     if raffle.tickets_sold >= raffle.max_tickets {
         transition_to_drawing(&env, &mut raffle, timestamp)?;
@@ -604,23 +620,45 @@ pub(crate) fn buy_tickets_for(env: Env, buyer: Address, recipient: Address, quan
         .instance()
         .get::<_, Address>(&DataKey::Factory)
     {
-        let args: Vec<Val> = (raffle.payment_token.clone(), total_price).into_val(&env);
+        let raffle_address = env.current_contract_address();
+        let volume_args: Vec<Val> = (
+            raffle_address.clone(),
+            raffle.payment_token.clone(),
+            total_price,
+        )
+            .into_val(&env);
+        let participant_args: Vec<Val> =
+            (raffle_address, recipient.clone()).into_val(&env);
         env.authorize_as_current_contract(Vec::from_array(
             &env,
-            [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: factory_address.clone(),
-                    fn_name: Symbol::new(&env, "record_volume"),
-                    args: args.clone(),
-                },
-                sub_invocations: Vec::new(&env),
-            })],
+            [
+                InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: factory_address.clone(),
+                        fn_name: Symbol::new(&env, "record_volume"),
+                        args: volume_args.clone(),
+                    },
+                    sub_invocations: Vec::new(&env),
+                }),
+                InvokerContractAuthEntry::Contract(SubContractInvocation {
+                    context: ContractContext {
+                        contract: factory_address.clone(),
+                        fn_name: Symbol::new(&env, "track_participant"),
+                        args: participant_args.clone(),
+                    },
+                    sub_invocations: Vec::new(&env),
+                }),
+            ],
         ));
-        env.invoke_contract::<()>(&factory_address, &Symbol::new(&env, "record_volume"), args);
+        env.invoke_contract::<()>(
+            &factory_address,
+            &Symbol::new(&env, "record_volume"),
+            volume_args,
+        );
         env.invoke_contract::<()>(
             &factory_address,
             &Symbol::new(&env, "track_participant"),
-            (recipient,).into_val(&env),
+            participant_args,
         );
     }
 

@@ -11,11 +11,6 @@ pub use math::{apply_bp, split_bp, BP_DENOMINATOR};
 
 pub use config_builder::{ConfigValidationError, RaffleConfigBuilder};
 
-/// Apply a basis-point rate using floor division, returning `None` on overflow.
-pub fn apply_bp(amount: i128, bp: u32) -> Option<i128> {
-    amount.checked_mul(bp as i128).map(|value| value / 10_000)
-}
-
 #[cfg(test)]
 mod nft_mint_test;
 use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
@@ -506,32 +501,6 @@ pub fn exceeds_internal_randomness_cap(
         && prize_amount > constants::MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT
 }
 
-/// Oracle randomness request payload sent to an oracle contract.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[contracttype]
-pub struct RandomnessRequest {
-    /// Target raffle contract identifier.
-    pub raffle_id: Address,
-    /// Unique request id used to correlate callback responses.
-    pub request_id: u64,
-    /// Callback contract address expected to receive randomness.
-    pub callback_address: Address,
-}
-
-/// Client trait for randomness oracle contracts.
-#[soroban_sdk::contractclient(name = "RandomnessOracleClient")]
-pub trait RandomnessOracleTrait {
-    /// Requests randomness from the oracle for a raffle draw.
-    fn request_randomness(env: soroban_sdk::Env, request: RandomnessRequest);
-}
-
-/// Client trait implemented by contracts that receive oracle callbacks.
-#[soroban_sdk::contractclient(name = "RandomnessReceiverClient")]
-pub trait RandomnessReceiverTrait {
-    /// Delivers a randomness response to the callback contract.
-    fn receive_randomness(env: soroban_sdk::Env, request_id: u64, random_seed: u64);
-}
-
 /// Cross-contract interface for an NFT ticket contract.
 ///
 /// The raffle-instance calls `mint` on this contract immediately after a
@@ -626,6 +595,7 @@ mod test {
             prizes: Vec::new(env),
             randomness_source: RandomnessSource::Internal,
             oracle_address: None,
+            oracle_public_key: None,
             protocol_fee_bp: 0,
             treasury_address: None,
             swap_router: None,

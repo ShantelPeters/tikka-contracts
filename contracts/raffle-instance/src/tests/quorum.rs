@@ -7,7 +7,8 @@ use raffle_shared::{
     constants::MIN_TICKET_PRICE, QuorumConfig, RaffleConfig, RaffleStatus, RandomnessSource,
 };
 
-use crate::{Contract, ContractClient, DataKey, Error};
+use crate::tests::{Contract, ContractClient};
+use crate::{DataKey, Error};
 
 // ---------------------------------------------------------------------------
 // Helpers

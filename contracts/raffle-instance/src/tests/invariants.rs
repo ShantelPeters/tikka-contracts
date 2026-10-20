@@ -112,7 +112,7 @@ fn run_solvency_lifecycle(ticket_count: u32, first_tier_bp: u32, cancel: bool) {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = env.register(crate::MockFactory, ());
+    let factory = env.register(crate::tests::MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let treasury = Address::generate(&env);

@@ -158,8 +158,6 @@ pub enum DataKey {
     /// blocks `create_raffle`, leaving all other admin operations, reads, and
     /// any raffles already in flight unaffected.
     CreationPaused,
-    /// Used to authorize factory-deployed raffles in cross-contract calls.
-    ValidRaffle(Address),
     GlobalEmergencyPause,
     RaffleCreator(u32),
     RaffleCategory(u32),
@@ -167,6 +165,9 @@ pub enum DataKey {
     WhitelistedPartner(Address),
     PartnerStats(Address),
     PartnersList,
+    /// Single registry record for factory-deployed raffles (#795, #1207).
+    /// Set by `create_raffle`, removed by `clean_old_raffle`; authorises the
+    /// instance for factory bookkeeping (e.g. `record_leaderboard_entry`).
     IsFactoryRaffle(Address),
     ApprovedOracle(Address),
     TopByTickets,
@@ -272,11 +273,20 @@ raffle_shared::impl_require_not_paused!(
     require_factory_not_paused
 );
 
-/// Require that the caller of the current contract is a raffle instance that
-/// this factory deployed. Used to authorise `record_volume`,
-/// `track_participant` and `record_leaderboard_entry` so arbitrary addresses
-/// cannot write protocol-wide state (#795).
-fn require_factory_raffle(_env: &Env) -> Result<(), ContractError> {
+/// Require an authenticated, factory-deployed raffle instance before it can
+/// write protocol-wide bookkeeping state (#795, #1207).
+fn require_factory_raffle(
+    env: &Env,
+    raffle_address: &Address,
+) -> Result<(), ContractError> {
+    raffle_address.require_auth();
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::IsFactoryRaffle(raffle_address.clone()))
+    {
+        return Err(ContractError::CallerNotRegisteredRaffle);
+    }
     Ok(())
 }
 
@@ -428,10 +438,6 @@ pub(crate) fn create_raffle_internal(
     env.storage()
         .persistent()
         .set(&DataKey::NextRaffleId, &(stable_id.saturating_add(1)));
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::ValidRaffle(raffle_address.clone()), &true);
 
     let mut creator_raffles: Vec<Address> = env
         .storage()
@@ -980,16 +986,20 @@ impl RaffleFactory {
     ///
     /// # Auth
     ///
-    /// No explicit admin check; the instance is trusted by the factory because
-    /// the factory deployed it. The instance itself validates that the caller
-    /// is the ticket buyer.
+    /// The caller supplies and authorizes its raffle-instance address; the
+    /// factory checks that address against its deployment registry.
     ///
     /// # Errors
     ///
     /// - [`ContractError::ArithmeticOverflow`] — adding `amount` to the
     ///   current total would exceed `i128::MAX`.
-    pub fn record_volume(env: Env, asset: Address, amount: i128) -> Result<(), ContractError> {
-        require_factory_raffle(&env)?;
+    pub fn record_volume(
+        env: Env,
+        raffle_address: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        require_factory_raffle(&env, &raffle_address)?;
         let total_volume: i128 = env
             .storage()
             .persistent()
@@ -1177,9 +1187,12 @@ impl RaffleFactory {
         Ok(())
     }
 
-    pub fn track_participant(env: Env, participant: Address) -> Result<(), ContractError> {
-        require_factory_raffle(&env)?;
-        participant.require_auth();
+    pub fn track_participant(
+        env: Env,
+        raffle_address: Address,
+        participant: Address,
+    ) -> Result<(), ContractError> {
+        require_factory_raffle(&env, &raffle_address)?;
 
         let key = DataKey::UniqueParticipant(participant.clone());
         if !env.storage().persistent().has(&key) {
@@ -1446,11 +1459,7 @@ impl RaffleFactory {
         prize_amount: i128,
         total_volume: i128,
     ) -> Result<(), ContractError> {
-        require_factory_raffle(&env)?;
-        raffle_address.require_auth();
-        if !env.storage().persistent().has(&DataKey::ValidRaffle(raffle_address.clone())) {
-            return Err(ContractError::NotAuthorized);
-        }
+        require_factory_raffle(&env, &raffle_address)?;
         Self::upsert_leaderboard(&env, &DataKey::TopByTickets, raffle_address.clone(), tickets_sold);
         Self::upsert_leaderboard(&env, &DataKey::TopByPrize, raffle_address.clone(), prize_amount);
         Self::upsert_leaderboard(&env, &DataKey::TopByVolume, raffle_address, total_volume);
@@ -1541,6 +1550,11 @@ impl RaffleFactory {
         env.storage()
             .persistent()
             .remove(&DataKey::RaffleCreator(raffle_id));
+        // Revoke the registry grant so a wiped raffle can no longer write
+        // protocol statistics or leaderboards (#1207).
+        env.storage()
+            .persistent()
+            .remove(&DataKey::IsFactoryRaffle(raffle_address.clone()));
         if category.is_some() {
             env.storage()
                 .persistent()

@@ -8,7 +8,7 @@ use soroban_sdk::{
 use crate::events::{RaffleFinalized, RaffleStatusChanged, WinnerDrawn};
 use crate::randomness::OracleSeedWinnerSelection;
 use crate::{DataKey, Error, FairnessMetadata, Raffle, RaffleStatus, RandomnessType, Ticket};
-use raffle_shared::BuyQuote;
+use raffle_shared::{math::apply_bp, BuyQuote};
 
 pub(crate) fn read_raffle(env: &Env) -> Result<Raffle, Error> {
     env.storage()
@@ -19,30 +19,6 @@ pub(crate) fn read_raffle(env: &Env) -> Result<Raffle, Error> {
 
 pub(crate) fn write_raffle(env: &Env, raffle: &Raffle) {
     env.storage().instance().set(&DataKey::Raffle, raffle);
-}
-
-pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQuote, Error> {
-    if quantity == 0 {
-        return Err(Error::InvalidQuantity);
-    }
-    let gross = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let discount = if raffle.early_bird_ticket_percentage > 0
-        && raffle.tickets_sold < raffle.max_tickets * raffle.early_bird_ticket_percentage / 100
-    {
-        raffle_shared::apply_bp(gross, raffle.early_bird_discount_bp)
-            .ok_or(Error::ArithmeticOverflow)?
-    } else {
-        0
-    };
-    let net = gross.checked_sub(discount).ok_or(Error::ArithmeticOverflow)?;
-    let fee = raffle_shared::apply_bp(net, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let net_to_pay = net.checked_add(fee).ok_or(Error::ArithmeticOverflow)?;
-    let effective_ticket_price = net / quantity as i128;
-    Ok(BuyQuote { gross, discount, fee, net_to_pay, effective_ticket_price })
 }
 
 /// Re-draw a winning ticket index so the tier is won by an address that has
@@ -132,44 +108,55 @@ pub(crate) fn bump_raffle_ttl(env: &Env, total_tickets: u32) {
         .set(&DataKey::LastBumpedIndex, &next);
 }
 
-/// Refresh the persistent TTL of the tickets touched by the current purchase
-/// plus the buyer's index entries.
+/// Refresh the persistent TTL of the entries written by the current purchase.
 ///
-/// `first_ticket_id` is the 1-indexed ID of the first ticket minted in this
-/// call and `quantity` the number minted. The buyer's `TicketCount` and
-/// `OwnerTickets` entries are refreshed too, since per-address caps are read
-/// from them on every purchase.
-#[allow(dead_code)]
+/// Called from both purchase paths (`buy_tickets`, `buy_tickets_for`)
+/// alongside [`bump_raffle_ttl`], which only handles the instance entry and a
+/// rolling window of older tickets. This closes the gap where a freshly minted
+/// ticket waited for the rolling cursor, and where the holder's
+/// `TicketCount` — read on **every** purchase to enforce
+/// `max_tickets_per_address` — was never refreshed, so its expiry silently
+/// reset the per-address cap (#1230).
+///
+/// - `holder` is the address whose `TicketCount` was incremented (the buyer
+///   for `buy_tickets`, the recipient for `buy_tickets_for`).
+/// - `first_ticket_id` is the 1-indexed ID of the first ticket minted in this
+///   call and `quantity` the number minted. Cost is O(`quantity`), which is
+///   already bounded by the purchase itself.
+///
+/// `OwnerTickets` is refreshed only when present, since `extend_ttl` on a
+/// missing persistent key traps.
 pub(crate) fn bump_touched_tickets(
     env: &Env,
-    buyer: &Address,
+    holder: &Address,
     first_ticket_id: u32,
     quantity: u32,
 ) {
+    let persistent = env.storage().persistent();
     for offset in 0..quantity {
         if let Some(ticket_id) = first_ticket_id.checked_add(offset) {
-            env.storage().persistent().extend_ttl(
-                &DataKey::Ticket(ticket_id),
-                raffle_shared::constants::PERSISTENT_TTL_THRESHOLD_LEDGERS,
-                raffle_shared::constants::PERSISTENT_TTL_BUMP_LEDGERS,
-            );
-            env.storage().persistent().extend_ttl(
-                &DataKey::TicketRefunded(ticket_id),
+            let key = DataKey::Ticket(ticket_id);
+            if persistent.has(&key) {
+                persistent.extend_ttl(
+                    &key,
+                    raffle_shared::constants::PERSISTENT_TTL_THRESHOLD_LEDGERS,
+                    raffle_shared::constants::PERSISTENT_TTL_BUMP_LEDGERS,
+                );
+            }
+        }
+    }
+    for key in [
+        DataKey::TicketCount(holder.clone()),
+        DataKey::OwnerTickets(holder.clone()),
+    ] {
+        if persistent.has(&key) {
+            persistent.extend_ttl(
+                &key,
                 raffle_shared::constants::PERSISTENT_TTL_THRESHOLD_LEDGERS,
                 raffle_shared::constants::PERSISTENT_TTL_BUMP_LEDGERS,
             );
         }
     }
-    env.storage().persistent().extend_ttl(
-        &DataKey::TicketCount(buyer.clone()),
-        raffle_shared::constants::PERSISTENT_TTL_THRESHOLD_LEDGERS,
-        raffle_shared::constants::PERSISTENT_TTL_BUMP_LEDGERS,
-    );
-    env.storage().persistent().extend_ttl(
-        &DataKey::OwnerTickets(buyer.clone()),
-        raffle_shared::constants::PERSISTENT_TTL_THRESHOLD_LEDGERS,
-        raffle_shared::constants::PERSISTENT_TTL_BUMP_LEDGERS,
-    );
 }
 
 /// Paginated operator helper: refresh `limit` ticket entries starting at
@@ -453,59 +440,6 @@ pub(crate) fn validate_token_address(env: &Env, token_address: &Address) -> Resu
     Ok(())
 }
 
-/// Compute the full pricing breakdown for buying `quantity` tickets.
-///
-/// Applies the early-bird discount when `raffle.tickets_sold` is below the
-/// configured threshold and returns the gross, discount, fee, net charge, and
-/// effective per-ticket price.  Both `buy_tickets` and `preview_buy` route
-/// through this function so quote and execution cannot diverge.
-pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQuote, Error> {
-    if quantity == 0 {
-        return Err(Error::InvalidQuantity);
-    }
-
-    let gross = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let discount = if raffle.early_bird_discount_bp > 0
-        && raffle.early_bird_ticket_percentage > 0
-    {
-        let threshold = (raffle.max_tickets as u64)
-            .checked_mul(raffle.early_bird_ticket_percentage as u64)
-            .ok_or(Error::ArithmeticOverflow)?
-            / 100;
-        if (raffle.tickets_sold as u64) < threshold {
-            raffle_shared::apply_bp(gross, raffle.early_bird_discount_bp)
-                .ok_or(Error::ArithmeticOverflow)?
-            apply_bp(gross, raffle.early_bird_discount_bp).map_err(|_| Error::ArithmeticOverflow)?
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let net_to_pay = gross
-        .checked_sub(discount)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let fee = raffle_shared::apply_bp(net_to_pay, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let fee = apply_bp(net_to_pay, raffle.protocol_fee_bp).map_err(|_| Error::ArithmeticOverflow)?;
-
-    let effective_ticket_price = net_to_pay / (quantity as i128);
-
-    Ok(BuyQuote {
-        gross,
-        discount,
-        fee,
-        net_to_pay,
-        effective_ticket_price,
-    })
-}
-
 pub(crate) fn build_internal_seed_u64(env: &Env) -> u64 {
     let xdr = (
         env.ledger().timestamp(),
@@ -534,7 +468,7 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
         for i in 0..last_tier_index {
             let bp = raffle.prizes.get(i).ok_or(Error::InvalidIndex)?;
             let amt = raffle_shared::apply_bp(raffle.prize_amount, bp)
-                .ok_or(Error::ArithmeticOverflow)?
+                .map_err(|_| Error::ArithmeticOverflow)?
                 .checked_add(allocated)
                 .ok_or(Error::ArithmeticOverflow)?;
             allocated = allocated
@@ -548,12 +482,8 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
     } else {
         let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
         raffle_shared::apply_bp(raffle.prize_amount, bp)
-            .ok_or(Error::ArithmeticOverflow)
+            .map_err(|_| Error::ArithmeticOverflow)
     }
-    let bp = raffle.prizes.get(tier_index).ok_or(Error::InvalidIndex)?;
-    raffle_shared::apply_bp(raffle.prize_amount, bp)
-        .ok_or(Error::ArithmeticOverflow)
-    apply_bp(raffle.prize_amount, bp).map_err(|_| Error::ArithmeticOverflow)
 }
 
 /// Finalize the raffle using a pre-computed `u64` seed.
@@ -756,7 +686,8 @@ fn record_leaderboard(env: &Env, raffle: &Raffle) {
         &factory,
         &Symbol::new(env, "record_leaderboard_entry"),
         args,
-        use raffle_shared::BuyQuote;
+    );
+}
 
 /// Shared by `buy_tickets` and `preview_buy` so charges never diverge.
 ///
@@ -790,7 +721,7 @@ pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQ
         if sold < eb_cap {
             let remaining = (eb_cap - sold).min(quantity as u64) as i128;
             let disc_per = raffle_shared::apply_bp(unit, raffle.early_bird_discount_bp)
-                .ok_or(Error::ArithmeticOverflow)?;
+                .map_err(|_| Error::ArithmeticOverflow)?;
             discount = disc_per
                 .checked_mul(remaining)
                 .ok_or(Error::ArithmeticOverflow)?;
@@ -803,64 +734,7 @@ pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<BuyQ
 
     // Floor fee — match current buy_tickets style (fee = total * bp / 10000)
     let fee = raffle_shared::apply_bp(after_discount, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let effective_ticket_price = after_discount
-        .checked_div(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    Ok(BuyQuote {
-        gross,
-        discount,
-        fee,
-        net_to_pay: after_discount,
-        effective_ticket_price,
-
-    );
-}
-
-use raffle_shared::BuyQuote;
-use raffle_shared::math::{apply_bp, split_bp};
-
-    let mut unit = raffle.ticket_price;
-    for i in 0..raffle.bundles.len() {
-        let b = raffle.bundles.get(i).unwrap();
-        if b.quantity <= quantity {
-            unit = b.price_per_ticket;
-        }
-    }
-
-    let gross = unit
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let mut discount: i128 = 0;
-    if raffle.early_bird_ticket_percentage > 0 && raffle.early_bird_discount_bp > 0 {
-        let eb_cap = (raffle.max_tickets as u64)
-            .saturating_mul(raffle.early_bird_ticket_percentage as u64)
-            / 100;
-        let sold = raffle.tickets_sold as u64;
-        if sold < eb_cap {
-            let remaining = (eb_cap - sold).min(quantity as u64) as i128;
-            let disc_per = unit
-                .checked_mul(raffle.early_bird_discount_bp as i128)
-                .ok_or(Error::ArithmeticOverflow)?
-                / 10_000;
-            discount = disc_per
-                .checked_mul(remaining)
-                .ok_or(Error::ArithmeticOverflow)?;
-        }
-    }
-
-    let after_discount = gross
-        .checked_sub(discount)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    // Floor fee — match current buy_tickets style (fee = total * bp / 10000)
-    let fee = after_discount
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10_000;
+        .map_err(|_| Error::ArithmeticOverflow)?;
 
     let effective_ticket_price = after_discount
         .checked_div(quantity as i128)
@@ -890,7 +764,6 @@ fn ticket_payment_amount(raffle: &Raffle, ticket_id: u32) -> i128 {
         return raffle.ticket_price;
     }
 
-    let discount = raffle_shared::apply_bp(raffle.ticket_price, raffle.early_bird_discount_bp)
     let discount = apply_bp(raffle.ticket_price, raffle.early_bird_discount_bp)
         .expect("solvency invariant overflow while calculating early-bird discount");
     raffle
@@ -988,43 +861,4 @@ pub fn assert_solvent(env: &Env) {
         payment_balance >= payment_owed,
         "escrow insolvent for payment token: balance {payment_balance}, owed {payment_owed}"
     );
-}
-
-pub(crate) fn calculate_buy_quote(
-    raffle: &Raffle,
-    quantity: u32,
-) -> Result<(i128, i128, i128), Error> {
-    let early_bird_cap = (raffle.ticket_supply as u64)
-        .checked_mul(raffle.early_bird_ticket_percentage as u64)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 100;
-    let early_bird_remaining = (early_bird_cap as u32).saturating_sub(raffle.tickets_sold);
-    let early_bird_quantity = u32::min(quantity, early_bird_remaining);
-    let regular_quantity = quantity - early_bird_quantity;
-
-    let discount = raffle_shared::apply_bp(raffle.ticket_price, raffle.early_bird_discount_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let discounted_price = raffle
-        .ticket_price
-        .checked_sub(discount)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let early_bird_cost = (early_bird_quantity as i128)
-        .checked_mul(discounted_price)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let regular_cost = (regular_quantity as i128)
-        .checked_mul(raffle.ticket_price)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let total_price = early_bird_cost
-        .checked_add(regular_cost)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let protocol_fee = raffle_shared::apply_bp(total_price, raffle.protocol_fee_bp)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    let effective_ticket_price = total_price
-        .checked_div(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-
-    Ok((total_price, protocol_fee, effective_ticket_price))
 }

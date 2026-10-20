@@ -171,23 +171,11 @@ A SHA-256 hash of off-chain metadata JSON (stored on IPFS) that describes the ra
 
 ## Oracle Integration
 
-### RandomnessRequest
-
-A request payload sent from a raffle instance to an oracle contract, specifying the target raffle address, a unique request ID for correlation, and the callback address expected to receive the randomness response.
-
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `struct RandomnessRequest`
-
-### RandomnessOracleTrait
-
-A contract trait (interface) implemented by oracle contracts. It defines the `request_randomness()` entry point that raffle instances call to request randomness for a draw.
-
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `trait RandomnessOracleTrait`
-
-### RandomnessReceiverTrait
-
-A contract trait (interface) that raffle instances implement to receive randomness callbacks from oracle contracts. It defines the `receive_randomness()` entry point, which the oracle invokes with the request ID and random seed.
-
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `trait RandomnessReceiverTrait`
+Randomness delivery is event-driven: a raffle instance emits
+`RandomnessRequested`, an off-chain oracle observes the event and submits a
+VRF proof through the instance's `provide_randomness` entrypoint. No
+contract-to-contract oracle request or callback traits are implemented.
+See [`ORACLE.md`](ORACLE.md) for the request and proof-verification flow.
 
 ## Related Documentation
 

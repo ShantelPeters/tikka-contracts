@@ -19,6 +19,9 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ### Changed
 
+- Factory bookkeeping now requires an authenticated, registered raffle address for volume, participant, and leaderboard writes; cleanup revokes the single registry record (#1207). Instance callers must use the updated factory ABI, so factory and compatible instance Wasm must be deployed together.
+- Removed unused contract-to-contract randomness request/callback traits; documented the implemented event-driven oracle flow and VRF proof binding (#1236).
+- Refresh newly written ticket and per-address TTL records on every purchase, and move the configurable factory mock into the instance test module (#1230, #1245).
 - README documentation section now links to architecture docs.
 - `Error::ExceedsMaxTicketsPerAddress` renumbered from `65` to `67` (was colliding with `CancelTimelockActive`); `OracleNotRegistered` (`68`) and `DuplicateOracleSubmission` (`69`) added (#605, #856).
 - `WinnerDrawn.ticket_id` now publishes the 1-based ticket ID (`index + 1`) instead of the 0-based pool position; `docs/EVENTS.md` documents the index-vs-ID convention (#856).

@@ -175,8 +175,8 @@ raffle.tickets_sold += quantity;
 crate::write_raffle(&env, &raffle);
 
 // 4. INTERACTIONS: External calls LAST
-env.invoke_contract(&factory, "record_volume", args);
-env.invoke_contract(&factory, "track_participant", args);
+env.invoke_contract(&factory, "record_volume", (raffle_address, asset, amount));
+env.invoke_contract(&factory, "track_participant", (raffle_address, participant));
 
 ### Entrypoint Security Status
 Entrypoint	Guard	Payment First	Factory Last	Status
@@ -298,5 +298,4 @@ stateDiagram-v2
 5. **Cancellation (`cancel_recurring_raffle`)**:
    - **Auth**: Restricted to either the schedule `creator` or the factory `admin`.
    - Sets `active = false` and emits `RecurringRaffleCancelled`.
-
 

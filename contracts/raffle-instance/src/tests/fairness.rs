@@ -14,10 +14,8 @@ use soroban_sdk::{
     Address, BytesN, Env, String, Vec,
 };
 
-use crate::{
-    Contract, ContractClient, DataKey, FairnessMetadata, MockFactory, RaffleConfig, RaffleStatus,
-    MIN_TICKET_PRICE,
-};
+use crate::tests::{Contract, ContractClient, MockFactory};
+use crate::{DataKey, FairnessMetadata, RaffleConfig, RaffleStatus, MIN_TICKET_PRICE};
 
 fn setup_unique_winners_raffle(env: &Env) -> (ContractClient<'_>, Address, Address) {
     let contract_id = env.register(Contract, ());
@@ -162,7 +160,7 @@ mod winner_count_regression {
     #[test]
     fn internal_draws_differ_across_networks() {
         let env = Env::default();
-        let contract_id = env.register(crate::Contract, ());
+        let contract_id = env.register(crate::tests::Contract, ());
         env.ledger().set_timestamp(1_000);
         env.ledger().set_sequence_number(100);
         env.ledger().set_network_id([1u8; 32]);

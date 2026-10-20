@@ -930,3 +930,110 @@ fn time_remaining_is_zero_after_end_time() {
     env.ledger().set_timestamp(1_001);
     assert_eq!(setup.client.get_stats().time_remaining, 0);
 }
+
+// ── Factory interaction (#1245) ──────────────────────────────────────────────
+
+#[test]
+fn buy_tickets_rejected_while_factory_reports_global_pause() {
+    let env = Env::default();
+    let (client, _admin, _creator, buyer, factory, _token) = setup_active_raffle(&env);
+    let factory_client = MockFactoryClient::new(&env, &factory);
+
+    factory_client.set_global_paused(&true);
+    assert_eq!(
+        client.try_buy_tickets(&buyer, &1),
+        Err(Ok(Error::ContractPaused))
+    );
+    assert_eq!(client.get_raffle().tickets_sold, 0);
+
+    // Lifting the pause restores purchases.
+    factory_client.set_global_paused(&false);
+    assert_eq!(client.buy_tickets(&buyer, &1), 1);
+}
+
+#[test]
+fn buy_tickets_notifies_factory_of_volume_and_participant() {
+    let env = Env::default();
+    let (client, _admin, _creator, buyer, factory, _token) = setup_active_raffle(&env);
+    let factory_client = MockFactoryClient::new(&env, &factory);
+    let raffle = client.get_raffle();
+
+    client.buy_tickets(&buyer, &2);
+
+    let volume = factory_client.volume_calls();
+    assert_eq!(volume.len(), 1, "record_volume must be called once per purchase");
+    let (token, amount) = volume.get(0).unwrap();
+    assert_eq!(token, raffle.payment_token);
+    assert_eq!(amount, raffle.ticket_price * 2);
+
+    let participants = factory_client.participant_calls();
+    assert_eq!(participants, soroban_sdk::vec![&env, buyer.clone()]);
+}
+
+// ── Per-address TTL refresh (#1230) ──────────────────────────────────────────
+
+#[test]
+fn ticket_count_ttl_refreshed_on_every_purchase_so_cap_survives() {
+    use raffle_shared::constants::{
+        PERSISTENT_TTL_BUMP_LEDGERS, PERSISTENT_TTL_THRESHOLD_LEDGERS,
+    };
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+    let factory = env.register(MockFactory, ());
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let (payment_token, token) = create_token(&env, &Address::generate(&env));
+    token.mint(&creator, &1_000_000);
+    token.mint(&buyer, &1_000_000);
+
+    let mut config = base_config(&env, &payment_token);
+    config.max_tickets = 10;
+    config.max_tickets_per_tx = 10;
+    config.max_tickets_per_address = 2;
+    config.prize_amount = 10 * raffle_shared::constants::MIN_TICKET_PRICE;
+    client.init(&factory, &admin, &creator, &config);
+    client.deposit_prize();
+
+    let count_ttl = |env: &Env| {
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::TicketCount(buyer.clone()))
+        })
+    };
+
+    client.buy_tickets(&buyer, &1);
+    assert_eq!(count_ttl(&env), PERSISTENT_TTL_BUMP_LEDGERS);
+    let ticket_ttl = env.as_contract(&contract_id, || {
+        env.storage().persistent().get_ttl(&DataKey::Ticket(1))
+    });
+    assert_eq!(ticket_ttl, PERSISTENT_TTL_BUMP_LEDGERS);
+
+    // Advance past the refresh threshold: remaining TTL drops below it.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += PERSISTENT_TTL_BUMP_LEDGERS - PERSISTENT_TTL_THRESHOLD_LEDGERS + 1;
+    });
+    assert!(count_ttl(&env) < PERSISTENT_TTL_THRESHOLD_LEDGERS);
+
+    client.buy_tickets(&buyer, &1);
+    assert_eq!(
+        count_ttl(&env),
+        PERSISTENT_TTL_BUMP_LEDGERS,
+        "TicketCount must be refreshed on every purchase"
+    );
+
+    // Advance again: the cap is still enforced from the live entry.
+    env.ledger().with_mut(|l| {
+        l.sequence_number += PERSISTENT_TTL_BUMP_LEDGERS - PERSISTENT_TTL_THRESHOLD_LEDGERS + 1;
+    });
+    assert_eq!(
+        client.try_buy_tickets(&buyer, &1),
+        Err(Ok(Error::ExceedsMaxTicketsPerAddress))
+    );
+}

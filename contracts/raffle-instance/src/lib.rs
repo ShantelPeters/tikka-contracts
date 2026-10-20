@@ -69,46 +69,8 @@ use crate::events::{
     WinnerDrawn,
 };
 
-const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
-
 #[contract]
 pub struct RaffleInstance;
-
-/// Test-only alias so unit tests may register the contract as `Contract`.
-#[cfg(test)]
-pub use RaffleInstance as Contract;
-
-/// Test-only alias for [`RaffleInstanceClient`].
-#[cfg(test)]
-pub type ContractClient<'a> = RaffleInstanceClient<'a>;
-
-/// Test-only stand-in for the factory contract. The instance invokes
-/// `record_volume` / `track_participant` on its factory during ticket
-/// purchases, so tests register this stub to keep those calls on-ledger.
-#[cfg(test)]
-#[contract]
-pub struct MockFactory;
-
-#[cfg(test)]
-#[contractimpl]
-impl MockFactory {
-    pub fn is_global_paused(_env: Env) -> bool {
-        false
-    }
-
-    pub fn record_volume(_env: Env, _payment_token: Address, _total_price: i128) {}
-
-    pub fn track_participant(_env: Env, _buyer: Address) {}
-
-    pub fn record_leaderboard_entry(
-        _env: Env,
-        _raffle_id: Address,
-        _tickets: i128,
-        _prize_amount: i128,
-        _volume: i128,
-    ) {
-    }
-}
 
 #[contracttype]
 #[derive(Clone)]

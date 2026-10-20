@@ -17,9 +17,14 @@ impl MockFactory {
         false
     }
 
-    pub fn record_volume(_env: soroban_sdk::Env, _token: Address, _amount: i128) {}
+    pub fn record_volume(
+        _env: soroban_sdk::Env,
+        _raffle: Address,
+        _token: Address,
+        _amount: i128,
+    ) {}
 
-    pub fn track_participant(_env: soroban_sdk::Env, _participant: Address) {}
+    pub fn track_participant(_env: soroban_sdk::Env, _raffle: Address, _participant: Address) {}
 
     pub fn record_leaderboard_entry(
         _env: soroban_sdk::Env,

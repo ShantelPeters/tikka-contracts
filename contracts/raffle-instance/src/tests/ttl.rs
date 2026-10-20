@@ -2,7 +2,8 @@
 #[cfg(test)]
 mod tests {
     use crate::helpers::{bump_raffle_ttl, extend_ticket_ttls};
-    use crate::{Contract, DataKey};
+    use crate::tests::Contract;
+    use crate::DataKey;
     use soroban_sdk::{
         testutils::{storage::Instance, storage::Persistent, Ledger},
         Address, Env,

@@ -176,26 +176,92 @@ pub fn setup_quorum_drawing_raffle<'a>(
 	(client, contract_id, creator, request_id)
 }
 
+/// Storage keys used by [`MockFactory`] to make its behaviour observable.
+#[soroban_sdk::contracttype]
+#[derive(Clone)]
+pub enum MockFactoryKey {
+	/// Value returned by `is_global_paused`.
+	GlobalPaused,
+	/// Every `(payment_token, amount)` pair received by `record_volume`.
+	VolumeCalls,
+	/// Every participant received by `track_participant`.
+	ParticipantCalls,
+	/// Number of `record_leaderboard_entry` calls received.
+	LeaderboardCalls,
+}
+
+/// Test stand-in for the factory contract (#1245).
+///
+/// The instance consults `is_global_paused` before purchases and notifies the
+/// factory via `record_volume` / `track_participant` /
+/// `record_leaderboard_entry`. Unlike a no-op stub, this mock lets a test
+/// engage the global pause and inspect which bookkeeping calls arrived.
 #[contract]
 pub struct MockFactory;
 
 #[contractimpl]
 impl MockFactory {
-	pub fn is_global_paused(_env: Env) -> bool {
-		false
+	/// Test control: set the value reported by `is_global_paused`.
+	pub fn set_global_paused(env: Env, paused: bool) {
+		env.storage().instance().set(&MockFactoryKey::GlobalPaused, &paused);
 	}
 
-	pub fn record_volume(_env: Env, _token: Address, _amount: i128) {}
+	pub fn is_global_paused(env: Env) -> bool {
+		env.storage()
+			.instance()
+			.get(&MockFactoryKey::GlobalPaused)
+			.unwrap_or(false)
+	}
 
-	pub fn track_participant(_env: Env, _participant: Address) {}
+	pub fn record_volume(env: Env, _raffle: Address, token: Address, amount: i128) {
+		let mut calls: Vec<(Address, i128)> = Self::volume_calls(env.clone());
+		calls.push_back((token, amount));
+		env.storage().instance().set(&MockFactoryKey::VolumeCalls, &calls);
+	}
+
+	pub fn track_participant(env: Env, _raffle: Address, participant: Address) {
+		let mut calls: Vec<Address> = Self::participant_calls(env.clone());
+		calls.push_back(participant);
+		env.storage()
+			.instance()
+			.set(&MockFactoryKey::ParticipantCalls, &calls);
+	}
 
 	pub fn record_leaderboard_entry(
-		_env: Env,
+		env: Env,
 		_raffle_id: Address,
 		_tickets: i128,
 		_prize_amount: i128,
 		_volume: i128,
 	) {
+		let n: u32 = Self::leaderboard_calls(env.clone());
+		env.storage()
+			.instance()
+			.set(&MockFactoryKey::LeaderboardCalls, &n.saturating_add(1));
+	}
+
+	/// Test inspection: all `record_volume` calls received, in order.
+	pub fn volume_calls(env: Env) -> Vec<(Address, i128)> {
+		env.storage()
+			.instance()
+			.get(&MockFactoryKey::VolumeCalls)
+			.unwrap_or(Vec::new(&env))
+	}
+
+	/// Test inspection: all `track_participant` calls received, in order.
+	pub fn participant_calls(env: Env) -> Vec<Address> {
+		env.storage()
+			.instance()
+			.get(&MockFactoryKey::ParticipantCalls)
+			.unwrap_or(Vec::new(&env))
+	}
+
+	/// Test inspection: number of `record_leaderboard_entry` calls received.
+	pub fn leaderboard_calls(env: Env) -> u32 {
+		env.storage()
+			.instance()
+			.get(&MockFactoryKey::LeaderboardCalls)
+			.unwrap_or(0)
 	}
 }
 

@@ -11,7 +11,7 @@ use soroban_sdk::{
 };
 
 use crate::{
-    read_raffle, Error, MockFactory, RaffleConfig, RaffleInstance, RaffleInstanceClient,
+    read_raffle, tests::MockFactory, Error, RaffleConfig, RaffleInstance, RaffleInstanceClient,
     RaffleStatus, RandomnessSource, MIN_TICKET_PRICE,
 };
 

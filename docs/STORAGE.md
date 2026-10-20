@@ -37,6 +37,7 @@ Source of truth: `DataKey` enum.
 | `TotalRafflesCreated` | Persistent | Incremented on create | Audit | Prefer keep | Cumulative creations |
 | `CreatorRaffles(Address)` | Persistent | Appended on create | Index | Prefer keep | Per-creator list |
 | `CategoryRaffles(String)` | Persistent | Appended when config has category | Index | Prefer keep | Category filter index (#439) |
+| `IsFactoryRaffle(Address)` | Persistent | Set on create; removed by `clean_old_raffle` | Yes while live | No for live raffles | Sole authorization registry for instance bookkeeping calls |
 | `UniqueParticipant(Address)` | Persistent | Once per address | Analytics | Soft | First-seen flag |
 | `TotalUniqueParticipants` | Persistent | Incremented with unique | Analytics | Soft | Aggregate |
 | `MinCreationDelay` | Persistent | Admin config | Yes if rate-limit on | Prefer keep | Creation rate limit |
@@ -165,9 +166,12 @@ Persistent keys need `--durability persistent` and `--key …` (or batched tooli
 
 ## Tombstone model for `clean_old_raffle`
 
-`clean_old_raffle` removes a raffle from the stable map without shifting IDs:
+`clean_old_raffle` removes a raffle from the stable map without shifting IDs
+and revokes its factory bookkeeping authorization:
 
 - `RaffleById(id)` is removed — the slot becomes a tombstone.
+- `IsFactoryRaffle(address)` is removed — the wiped instance can no longer
+  write volume, participant, or leaderboard state.
 - `NextRaffleId` is never decremented — IDs are never reused.
 - `RaffleCount` is decremented — this is the count of **live** raffles.
 - `CreatorRaffles` and `CategoryRaffles` are pruned — tombstones do not appear in per-creator or per-category views.
@@ -185,6 +189,22 @@ Persistent keys need `--durability persistent` and `--key …` (or batched tooli
 - No gaps or repeats across pages.
 - `has_more` is consistent with `total`.
 - Tombstoned raffles are invisible to every query path.
+
+`IsFactoryRaffle(address)` is the factory's single registry record for
+authorization. `record_volume`, `track_participant`, and
+`record_leaderboard_entry` require the raffle address as an argument, require
+that address to authorize the call, and check this registry key. Raffle
+instances authorize these internal calls as the current contract.
+
+### Factory bookkeeping call compatibility
+
+The bookkeeping entrypoints now take the calling raffle address
+(`record_volume(raffle_address, asset, amount)` and
+`track_participant(raffle_address, participant)`). Existing instance Wasm
+calling the former argument lists is not compatible with this factory ABI.
+Do not upgrade an existing factory independently: the factory and compatible
+instance Wasm must be deployed together. This change does not add an in-place
+migration mechanism for already-deployed raffle instances.
 
 ## Related docs
 
@@ -214,9 +234,20 @@ purchase would be O(n), so the work is split (#1010):
 | Call | Keys bumped | Window |
 |---|---|---|
 | `buy_tickets` / `buy_tickets_for` (via `bump_raffle_ttl`) | Instance entry + rolling window of `Ticket(id)` | `TTL_BUMP_WINDOW` (100) entries per call, cycling via `LastBumpedIndex` |
-| `buy_tickets` touched-ticket bump (via `bump_touched_tickets`) | The `quantity` tickets minted by this call + buyer's `TicketCount` and `OwnerTickets` (+ `TicketRefunded` slots) | Exactly the tickets touched by the call |
+| `buy_tickets` / `buy_tickets_for` (via `bump_touched_tickets`) | The `quantity` `Ticket(id)` entries minted by this call + the holder's `TicketCount` (+ `OwnerTickets` when present) | Exactly the entries touched by the call (#1230) |
 | `extend_ttl(start_ticket_id, limit)` (permissionless, paginated) | Instance entry + `limit` `Ticket(id)` entries from `start_ticket_id` | Operator-chosen; returns the refreshed count |
 | `finalize_raffle` (via `bump_raffle_ttl`) | Instance entry + next rolling window | Same 100-entry window |
+
+### Refresh policy per key
+
+| Key | Tier | Refreshed by | Why |
+|---|---|---|---|
+| Instance entry (`Raffle`, flags, `LastBumpedIndex`, …) | Instance | Every purchase and `finalize_raffle` (`bump_raffle_ttl`), `extend_ttl` | Hot state for every operation |
+| `Ticket(id)` — just minted | Persistent | The purchase that minted it (`bump_touched_tickets`) | New tickets no longer wait for the rolling cursor |
+| `Ticket(id)` — older | Persistent | Rolling window on purchase/finalize (`bump_raffle_ttl`), paginated `extend_ttl` | Bounded O(100) per call |
+| `TicketCount(addr)` | Persistent | **Every** purchase by/for `addr` (`bump_touched_tickets`) | Read on every purchase to enforce `max_tickets_per_address`; expiry would silently reset the cap |
+| `OwnerTickets(addr)` | Persistent | Every purchase by/for `addr`, when the entry exists | Read by `get_my_tickets` |
+| `TicketRefunded(id)` | Persistent | Not bumped (written at refund time with default TTL) | Only consulted during refunds / cleanup |
 
 ### Retention window
 

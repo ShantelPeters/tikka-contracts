@@ -107,6 +107,21 @@ pub fn create_raffles_via_factory(
                 .set(&DataKey::RaffleById(stable_id), &raffle_address);
             env.storage()
                 .persistent()
+                .set(&DataKey::RaffleCreator(stable_id), creator);
+            env.storage()
+                .persistent()
+                .set(&DataKey::IsFactoryRaffle(raffle_address.clone()), &true);
+            let mut creator_raffles: SdkVec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::CreatorRaffles(creator.clone()))
+                .unwrap_or_else(|| SdkVec::new(env));
+            creator_raffles.push_back(raffle_address.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::CreatorRaffles(creator.clone()), &creator_raffles);
+            env.storage()
+                .persistent()
                 .set(&DataKey::NextRaffleId, &(stable_id.saturating_add(1)));
             let live_count: u32 = env
                 .storage()

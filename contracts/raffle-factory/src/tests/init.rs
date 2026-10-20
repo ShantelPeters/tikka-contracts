@@ -23,12 +23,18 @@ fn test_record_volume_overflow() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _admin, _treasury) = setup_factory(&env);
+    let raffle = Address::generate(&env);
     let asset = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::IsFactoryRaffle(raffle.clone()), &true);
+    });
 
-    client.record_volume(&asset, &(i128::MAX - 1));
+    client.record_volume(&raffle, &asset, &(i128::MAX - 1));
     assert_eq!(client.get_total_volume(&asset), i128::MAX - 1);
     let start_events = env.events().all().len();
-    assert!(client.try_record_volume(&asset, &2).is_err());
+    assert!(client.try_record_volume(&raffle, &asset, &2).is_err());
     assert_eq!(env.events().all().len(), start_events);
     assert_eq!(client.get_total_volume(&asset), i128::MAX - 1);
 }

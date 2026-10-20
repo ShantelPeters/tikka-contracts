@@ -251,34 +251,73 @@ See [oracle/README.md](../oracle/README.md) for the full configuration reference
 
 ## Integration with On-Chain Contracts
 
-### RandomnessRequested Event
+The oracle protocol is **event-driven**. There is no contract-to-contract
+oracle call: the raffle instance never invokes an oracle contract, and no
+contract implements a `receive_randomness` callback. (`raffle-shared` used to
+export `RandomnessRequest`, `RandomnessOracleTrait`/`RandomnessOracleClient`
+and `RandomnessReceiverTrait`/`RandomnessReceiverClient`; nothing implemented
+or called them, so they were removed in #1236. Do not integrate against them.)
 
-Emitted by the raffle instance when `finalize_raffle` is called:
+```mermaid
+sequenceDiagram
+    participant R as Raffle instance
+    participant L as Oracle listener (off-chain)
+    participant V as VRF service (off-chain)
+    R->>R: finalize_raffle → request_randomness()<br/>writes RandomnessRequestId / Ledger / DrawingLock
+    R-->>L: RandomnessRequested { oracle, request_id, timestamp }
+    L->>V: queue job (contract_address, request_id)
+    V->>V: proof = ed25519_sign(key, XDR(contract_address, request_id))<br/>seed = first 8 bytes of sha256(proof)
+    V->>R: provide_randomness(seed, public_key, proof, request_id)
+    R->>R: verify & select winner → RandomnessReceived
+```
+
+### 1. Request: `RandomnessRequested` event
+
+`request_randomness` (`contracts/raffle-instance/src/helpers.rs`) only writes
+the request id, the request ledger and the drawing lock to instance storage
+and emits:
 
 ```rust
 pub struct RandomnessRequested {
-    pub oracle: Address,          // Single oracle address (External mode)
-    pub request_id: u64,          // Unique request ID for this raffle
-    pub timestamp: u64,           // Ledger timestamp of emission
+    pub oracle: Address,   // configured oracle (External mode)
+    pub request_id: u64,   // correlation id for the later delivery
+    pub timestamp: u64,    // ledger timestamp of emission
 }
 ```
 
-In Quorum mode, the listener receives one event and fans it out to each oracle in the quorum.
+The off-chain listener (`oracle/src/listener/event-listener.service.ts`)
+watches for this event. In Quorum mode the listener receives one event and
+fans it out to each oracle in the quorum.
 
-### provide_randomness Entrypoint
+### 2. Delivery: `provide_randomness` entrypoint
 
-Called by the oracle to submit the computed seed:
+The oracle answers by calling the instance's own entrypoint:
 
 ```rust
 pub fn provide_randomness(
     env: Env,
+    random_seed: u64,
+    public_key: BytesN<32>,
+    proof: BytesN<64>,
     request_id: u64,
-    seed: u64,
-    proof: Option<Bytes>,
-) -> Result<(), Error>
+) -> Result<Address, Error>   // returns the winner
 ```
 
-For External mode, the oracle provides a signature proof. For Quorum mode, the proof is optional (may be `None`).
+The proof is an Ed25519 signature over the XDR encoding of
+`(contract_address, request_id)` (`build_vrf_proof_message`), so a proof for
+one raffle or one request cannot be replayed against another. The instance
+checks, in order:
+
+1. a draw is in progress (`DrawingLock`) and the raffle is not in Quorum mode;
+2. `oracle_address.require_auth()`;
+3. `request_id` matches the pending request (`require_awaiting_randomness`);
+4. at least `RANDOMNESS_MIN_DELAY_LEDGERS` have passed since the request;
+5. `random_seed == derive_random_seed_from_proof(proof)` (first 8 bytes of `sha256(proof)`);
+6. `public_key` equals the oracle key registered on the raffle;
+7. `ed25519_verify(public_key, message, proof)`.
+
+Quorum mode uses `provide_quorum_commit` / `provide_quorum_reveal` instead —
+see [COMMIT_REVEAL.md](COMMIT_REVEAL.md).
 
 ### Fallback Behavior
 

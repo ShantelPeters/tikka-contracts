@@ -680,8 +680,8 @@ fn unique_winners_limits_one_tier_per_address() {
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let contract_id = env.register(crate::Contract, ());
-    let client = crate::ContractClient::new(&env, &contract_id);
+    let contract_id = env.register(crate::tests::Contract, ());
+    let client = crate::tests::ContractClient::new(&env, &contract_id);
     let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
